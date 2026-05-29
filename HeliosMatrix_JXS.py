@@ -1,16 +1,6 @@
 """
-JXS Options SuperDashboard
+Helios Matrix Options Dashboard
 Paper-trading dashboard for regime classification + option spread scanning.
-
-Run locally:
-    streamlit run jxs_options_superdashboard.py
-
-Deploy on Streamlit Cloud:
-    - Upload this file as your main app file
-    - Add requirements.txt from this answer
-
-IMPORTANT:
-    This app is for education and paper trading only. It does not send orders.
 """
 
 from __future__ import annotations
@@ -53,7 +43,7 @@ except Exception:
 # =============================================================================
 
 st.set_page_config(
-    page_title="JXS Options SuperDashboard",
+    page_title="Helios Matrix Options Dashboard",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",

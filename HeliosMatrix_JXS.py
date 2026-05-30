@@ -1316,7 +1316,7 @@ def main() -> None:
     st.title("Helios Options Matrix")
     st.markdown(
         """
-        This dashboard combines FinBERT/XGBoost style with a new options regime classifier and spread scanner. 
+        Named after the personification of the Sun, this dashboard brings clarity to the options market. It combines FinBERT/XGBoost with a new options regime classifier and spread scanner. 
         It does **not** connect to a broker or send orders.
         """
     )

@@ -1,5 +1,5 @@
 """
-Helios Matrix Options
+HELIOS Matrix Options
 Trading dashboard for regime classification + option spread scanning.
 """
 
@@ -43,7 +43,7 @@ except Exception:
 # =============================================================================
 
 st.set_page_config(
-    page_title="Helios Options Matrix",
+    page_title="HELIOS Options Matrix",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -1313,7 +1313,7 @@ def format_spread_table(spreads: pd.DataFrame, n: int = 50) -> pd.DataFrame:
 def main() -> None:
     inject_css()
 
-    st.title("Helios Options Matrix")
+    st.title("HELIOS Options Matrix")
     st.markdown(
         """
         Named after the personification of the Sun, this dashboard brings clarity to the options market. It combines FinBERT/XGBoost with a new options regime classifier and spread scanner. 
@@ -1333,7 +1333,7 @@ def main() -> None:
         include_iron_condors = st.checkbox("Build iron condor candidates from verticals", value=True)
         event_risk_days = st.slider("Event-risk window days", 0, 30, 7)
         max_expirations_to_scan = st.slider("Max expirations per ticker", 1, 12, 6)
-        run_scan = st.button("Run Helios Matrix Scan", type="primary")
+        run_scan = st.button("Run HELIOS Matrix Scan", type="primary")
 
     tickers = [clean_ticker(t) for t in ticker_text.split(",") if clean_ticker(t)]
 
@@ -1477,7 +1477,7 @@ def main() -> None:
 
         regime_df = st.session_state.get("latest_regime_rows", pd.DataFrame())
         if regime_df.empty:
-            st.info("Set inputs in the sidebar and click **Run Helios Scan**.")
+            st.info("Set inputs in the sidebar and click **Run HELIOS Scan**.")
         else:
             display_df = regime_df.copy()
             for col in ["Price", "ATM IV", "IV Rank Proxy", "RV20 %", "ATR %", "Trend Strength"]:

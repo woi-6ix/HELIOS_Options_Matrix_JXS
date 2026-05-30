@@ -1,6 +1,6 @@
 """
-Helios Matrix Options Dashboard
-Paper-trading dashboard for regime classification + option spread scanning.
+Helios Matrix Options
+Trading dashboard for regime classification + option spread scanning.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ except Exception:
 # =============================================================================
 
 st.set_page_config(
-    page_title="Helios Matrix Options Dashboard",
+    page_title="Helios Options Matrix",
     page_icon="📊",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -1313,7 +1313,7 @@ def format_spread_table(spreads: pd.DataFrame, n: int = 50) -> pd.DataFrame:
 def main() -> None:
     inject_css()
 
-    st.title("Helios Options Matrix Dashboard")
+    st.title("Helios Options Matrix")
     st.markdown(
         """
         This dashboard combines FinBERT/XGBoost style with a new options regime classifier and spread scanner. 

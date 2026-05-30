@@ -1313,10 +1313,10 @@ def format_spread_table(spreads: pd.DataFrame, n: int = 50) -> pd.DataFrame:
 def main() -> None:
     inject_css()
 
-    st.title("JXS Options SuperDashboard")
+    st.title("Helios Options Matrix Dashboard")
     st.markdown(
         """
-        **Paper-trading only.** This dashboard combines your FinBERT/XGBoost style with a new options regime classifier and spread scanner. 
+        This dashboard combines FinBERT/XGBoost style with a new options regime classifier and spread scanner. 
         It does **not** connect to a broker or send orders.
         """
     )
@@ -1333,7 +1333,7 @@ def main() -> None:
         include_iron_condors = st.checkbox("Build iron condor candidates from verticals", value=True)
         event_risk_days = st.slider("Event-risk window days", 0, 30, 7)
         max_expirations_to_scan = st.slider("Max expirations per ticker", 1, 12, 6)
-        run_scan = st.button("Run SuperDashboard Scan", type="primary")
+        run_scan = st.button("Run Helios Matrix Scan", type="primary")
 
     tickers = [clean_ticker(t) for t in ticker_text.split(",") if clean_ticker(t)]
 
@@ -1477,7 +1477,7 @@ def main() -> None:
 
         regime_df = st.session_state.get("latest_regime_rows", pd.DataFrame())
         if regime_df.empty:
-            st.info("Set inputs in the sidebar and click **Run SuperDashboard Scan**.")
+            st.info("Set inputs in the sidebar and click **Run Helios Scan**.")
         else:
             display_df = regime_df.copy()
             for col in ["Price", "ATM IV", "IV Rank Proxy", "RV20 %", "ATR %", "Trend Strength"]:

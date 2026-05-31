@@ -2008,7 +2008,7 @@ def main() -> None:
                         st.write("**Summary:**")
                         st.write(article["Full Text"])
 
-                )
+                
 
     st.markdown("---")
     st.markdown(

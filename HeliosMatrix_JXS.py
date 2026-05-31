@@ -6,6 +6,7 @@ Trading dashboard for regime classification + option spread scanning.
 from __future__ import annotations
 
 import math
+import html
 import os
 
 # Streamlit Cloud stability for transformer/PyTorch models.
@@ -193,6 +194,41 @@ def inject_css() -> None:
         .small-note {
             font-size: 0.90rem;
             color: #C7C7C7;
+        }
+        .news-readout-metrics {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 0.65rem;
+            margin: 0.15rem 0 0.9rem 0;
+        }
+        .news-mini-metric {
+            border: 1px solid #3B0A45;
+            border-radius: 10px;
+            padding: 0.65rem 0.75rem;
+            background: linear-gradient(135deg, #0B0B0B 0%, #1A061F 100%);
+            min-width: 0;
+            overflow-wrap: anywhere;
+        }
+        .news-mini-label {
+            color: #B266FF;
+            font-size: 0.78rem;
+            line-height: 1.05rem;
+            font-weight: 700;
+            margin-bottom: 0.25rem;
+            white-space: normal;
+        }
+        .news-mini-value {
+            color: #FFFFFF;
+            font-size: 1.05rem;
+            line-height: 1.25rem;
+            font-weight: 700;
+            white-space: normal;
+            overflow-wrap: anywhere;
+        }
+        @media (max-width: 900px) {
+            .news-readout-metrics {
+                grid-template-columns: 1fr;
+            }
         }
         </style>
         """,
@@ -2041,9 +2077,23 @@ def main() -> None:
                 st.pyplot(plot_sentiment_donut(sent_df), use_container_width=True)
 
             with readout_col:
-                r1, r2 = st.columns(2)
-                r1.metric("News Bias", readout["bias"])
-                r2.metric("Volatility Risk", readout["risk_level"])
+                bias_value = html.escape(str(readout.get("bias", "N/A")))
+                risk_value = html.escape(str(readout.get("risk_level", "N/A")))
+                st.markdown(
+                    f"""
+                    <div class="news-readout-metrics">
+                        <div class="news-mini-metric">
+                            <div class="news-mini-label">News Bias</div>
+                            <div class="news-mini-value">{bias_value}</div>
+                        </div>
+                        <div class="news-mini-metric">
+                            <div class="news-mini-label">Volatility Risk</div>
+                            <div class="news-mini-value">{risk_value}</div>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
                 st.markdown(f"**Spread interpretation:** {readout['spread_readout']}")
                 st.markdown(f"**Volatility warning:** {readout['volatility_warning']}")

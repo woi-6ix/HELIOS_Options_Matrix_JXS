@@ -7,6 +7,11 @@ from __future__ import annotations
 
 import math
 import os
+
+# Streamlit Cloud stability for transformer/PyTorch models.
+os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 import uuid
 import logging
 from dataclasses import dataclass
@@ -36,6 +41,13 @@ try:
     from transformers import pipeline
 except Exception:
     pipeline = None
+
+# Extra workaround for Streamlit + torch.classes watcher bug on cloud deploys.
+try:
+    import torch
+    torch.classes.__path__ = []
+except Exception:
+    pass
 
 
 # =============================================================================
@@ -1182,42 +1194,243 @@ def journal_row_from_candidate(candidate: pd.Series, notes: str = "") -> Dict[st
 # OPTIONAL FINBERT SENTIMENT
 # =============================================================================
 
+NEWS_RISK_KEYWORDS = {
+    "Earnings / Guidance": [
+        "earnings", "eps", "revenue", "guidance", "quarterly results", "profit warning",
+        "misses estimates", "beats estimates", "conference call"
+    ],
+    "Macro / Fed / Rates": [
+        "fed", "federal reserve", "fomc", "interest rates", "rate cut", "rate hike",
+        "inflation", "cpi", "ppi", "jobs report", "payrolls", "treasury yields"
+    ],
+    "Analyst / Rating Risk": [
+        "downgrade", "upgrade", "price target", "initiates coverage", "rating cut",
+        "rating raised", "analyst"
+    ],
+    "Legal / Regulatory": [
+        "lawsuit", "sec", "doj", "ftc", "probe", "investigation", "antitrust",
+        "regulatory", "settlement", "fine"
+    ],
+    "M&A / Corporate Action": [
+        "merger", "acquisition", "takeover", "buyout", "spin off", "spinoff",
+        "stock split", "dividend", "share repurchase"
+    ],
+    "Volatility / Shock": [
+        "surges", "plunges", "crashes", "selloff", "rally", "volatile", "warning",
+        "halts", "bankruptcy", "restructuring"
+    ],
+}
+
+
 @st.cache_resource(show_spinner=False)
 def get_finbert_pipeline():
     if pipeline is None:
-        raise ImportError("transformers is not installed.")
+        raise ImportError("transformers is not installed. Add transformers and torch to requirements.txt.")
     return pipeline(task="text-classification", model="ProsusAI/finbert")
+
+
+def get_news_entry_text(entry) -> str:
+    """Match IRIS logic: use article summary first, then title as fallback."""
+    return (entry.get("summary") or entry.get("title") or "").strip()
+
+
+def get_news_entry_title(entry) -> str:
+    return (entry.get("title") or "Untitled").strip()
+
+
+def finbert_sentiment_score_like_iris(text: str, pipe) -> Tuple[str, float, float]:
+    """
+    Match the IRIS scanner's displayed scoring:
+    - positive = +confidence
+    - negative = -confidence
+    - neutral = +confidence, because IRIS only flips negative labels
+
+    Also returns a directional score where neutral = 0.0, which is better for
+    spread-bias interpretation.
+    """
+    if not text:
+        return "neutral", 0.0, 0.0
+
+    result = pipe(text, truncation=True)[0]
+    label = str(result.get("label", "neutral")).lower()
+    confidence = float(result.get("score", 0.0))
+
+    iris_score = -confidence if label == "negative" else confidence
+    directional_score = -confidence if label == "negative" else confidence if label == "positive" else 0.0
+    return label, iris_score, directional_score
+
+
+def detect_news_risk_flags(title: str, summary: str) -> List[str]:
+    text = f"{title} {summary}".lower()
+    flags = []
+    for category, keywords in NEWS_RISK_KEYWORDS.items():
+        if any(k in text for k in keywords):
+            flags.append(category)
+    return flags
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def fetch_yahoo_rss_sentiment(ticker: str, keyword: str, max_articles: int = 20) -> Tuple[pd.DataFrame, Optional[str]]:
+    """
+    Pull Yahoo Finance RSS and score articles using the same FinBERT scoring style
+    as IRIS. The previous HELIOS version produced different scores because it set
+    neutral articles to 0.0 and only analyzed summary[:1800].
+    """
     if feedparser is None:
-        return pd.DataFrame(), "feedparser is not installed."
+        return pd.DataFrame(), "feedparser is not installed. Add feedparser to requirements.txt."
+
     try:
         pipe = get_finbert_pipeline()
         rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={clean_ticker(ticker)}&region=US&lang=en-US"
         feed = feedparser.parse(rss_url)
+
+        if not getattr(feed, "entries", None):
+            return pd.DataFrame(), None
+
         rows = []
+        keyword_clean = str(keyword or "").strip().lower()
+
         for entry in feed.entries[:max_articles]:
-            summary = str(entry.get("summary", ""))
-            title = str(entry.get("title", ""))
-            if keyword and keyword.lower() not in (title + " " + summary).lower():
+            title = get_news_entry_title(entry)
+            full_text = get_news_entry_text(entry)
+
+            # Match IRIS keyword filtering: check both title and article text.
+            if keyword_clean and keyword_clean not in full_text.lower() and keyword_clean not in title.lower():
                 continue
-            result = pipe(summary[:1800])[0]
-            label = result.get("label", "neutral")
-            score = float(result.get("score", 0.0))
-            signed = -score if label.lower() == "negative" else score if label.lower() == "positive" else 0.0
+
+            label, iris_score, directional_score = finbert_sentiment_score_like_iris(full_text, pipe)
+            risk_flags = detect_news_risk_flags(title, full_text)
+
             rows.append({
-                "Date": entry.get("published", ""),
+                "Date": entry.get("published", "N/A"),
                 "Title": title,
                 "Sentiment": label,
-                "Score": signed,
+                "Score": iris_score,
+                "Directional Score": directional_score,
+                "Confidence": abs(iris_score),
+                "Risk Flags": ", ".join(risk_flags) if risk_flags else "None detected",
                 "Link": entry.get("link", ""),
-                "Summary": summary,
+                "Full Text": full_text,
             })
+
         return pd.DataFrame(rows), None
     except Exception as e:
         return pd.DataFrame(), f"Sentiment error: {e}"
+
+
+def build_news_spread_readout(sent_df: pd.DataFrame, regime_row: Optional[pd.Series] = None) -> Dict[str, object]:
+    if sent_df is None or sent_df.empty:
+        return {
+            "bias": "No clear news bias",
+            "volatility_warning": "No matching articles were available.",
+            "spread_readout": "Do not use news as a signal until articles are available.",
+            "risk_level": "Unknown",
+            "warnings": [],
+        }
+
+    avg_iris_score = float(sent_df["Score"].mean())
+    avg_directional_score = float(sent_df["Directional Score"].mean())
+    positive_count = int((sent_df["Directional Score"] > 0).sum())
+    negative_count = int((sent_df["Directional Score"] < 0).sum())
+    neutral_count = int((sent_df["Directional Score"] == 0).sum())
+
+    all_flags = []
+    for val in sent_df["Risk Flags"].fillna(""):
+        if val and val != "None detected":
+            all_flags.extend([x.strip() for x in val.split(",") if x.strip()])
+
+    flag_counts = pd.Series(all_flags).value_counts().to_dict() if all_flags else {}
+    event_count = sum(flag_counts.values())
+
+    # Use scanner context if available.
+    iv_rank = np.nan
+    regime = ""
+    if regime_row is not None:
+        iv_rank = safe_float(regime_row.get("IV Rank Proxy"), np.nan)
+        regime = str(regime_row.get("Regime", ""))
+
+    iv_is_high = np.isfinite(iv_rank) and iv_rank >= 65
+    iv_is_low = np.isfinite(iv_rank) and iv_rank <= 35
+
+    if event_count >= 4 or any(k in flag_counts for k in ["Earnings / Guidance", "Macro / Fed / Rates", "Volatility / Shock"]):
+        risk_level = "High"
+        volatility_warning = "News contains event/volatility flags. Avoid oversized short premium, and be careful with iron condors/butterflies around binary events."
+    elif event_count >= 2 or abs(avg_directional_score) >= 0.45:
+        risk_level = "Moderate"
+        volatility_warning = "News has enough directional or event language to justify smaller paper size and wider risk checks."
+    else:
+        risk_level = "Low"
+        volatility_warning = "No major event-risk cluster detected from the matched headlines."
+
+    if risk_level == "High":
+        bias = "Event-risk / volatility caution"
+        spread_readout = "Avoid or reduce size. Prefer waiting, or use very small defined-risk paper trades only. Avoid neutral short-premium setups if earnings/macro shock risk is present."
+    elif avg_directional_score >= 0.35:
+        bias = "Bullish news bias"
+        if iv_is_high or "High IV" in regime:
+            spread_readout = "Bull put credit spread candidate: bullish news + richer IV can support defined-risk premium selling."
+        elif iv_is_low or "Low IV" in regime:
+            spread_readout = "Call debit spread candidate: bullish news + lower IV may make long-premium defined-risk exposure cleaner."
+        else:
+            spread_readout = "Bullish candidate: compare bull put credit spreads vs call debit spreads based on IV and liquidity."
+    elif avg_directional_score <= -0.35:
+        bias = "Bearish news bias"
+        if iv_is_high or "High IV" in regime:
+            spread_readout = "Bear call credit spread candidate: bearish news + richer IV can support defined-risk premium selling."
+        elif iv_is_low or "Low IV" in regime:
+            spread_readout = "Put debit spread candidate: bearish news + lower IV may make long-premium defined-risk exposure cleaner."
+        else:
+            spread_readout = "Bearish candidate: compare bear call credit spreads vs put debit spreads based on IV and liquidity."
+    else:
+        bias = "Neutral / mixed news bias"
+        if iv_is_high or "Sideways / High IV" in regime:
+            spread_readout = "Iron condor candidate only if price trend is weak and no event-risk warnings are present."
+        elif iv_is_low or "Sideways / Low IV" in regime:
+            spread_readout = "Butterfly candidate only if price is range-bound and liquidity is tight."
+        else:
+            spread_readout = "No strong news edge. Let the regime scanner and option liquidity decide; paper-watchlist is reasonable."
+
+    warnings = [f"{name}: {count} article(s)" for name, count in flag_counts.items()]
+    if negative_count > positive_count and avg_directional_score < -0.20:
+        warnings.append("Negative article count is heavier than positive article count.")
+    if neutral_count >= max(3, len(sent_df) // 2):
+        warnings.append("Most articles are neutral, so the news signal may be weak.")
+
+    return {
+        "bias": bias,
+        "volatility_warning": volatility_warning,
+        "spread_readout": spread_readout,
+        "risk_level": risk_level,
+        "warnings": warnings,
+        "avg_iris_score": avg_iris_score,
+        "avg_directional_score": avg_directional_score,
+        "positive_count": positive_count,
+        "negative_count": negative_count,
+        "neutral_count": neutral_count,
+    }
+
+
+def plot_sentiment_donut(sent_df: pd.DataFrame):
+    counts = sent_df["Sentiment"].str.lower().value_counts()
+    labels = ["positive", "neutral", "negative"]
+    values = [int(counts.get(label, 0)) for label in labels]
+
+    fig, ax = plt.subplots(figsize=(5.2, 5.2))
+    wedges, texts, autotexts = ax.pie(
+        values,
+        labels=[label.title() for label in labels],
+        autopct=lambda pct: f"{pct:.0f}%" if pct > 0 else "",
+        startangle=90,
+        pctdistance=0.78,
+        wedgeprops={"width": 0.38},
+    )
+    avg_score = float(sent_df["Score"].mean()) if not sent_df.empty else 0.0
+    avg_dir = float(sent_df["Directional Score"].mean()) if not sent_df.empty else 0.0
+    ax.text(0, 0.06, f"IRIS Avg\n{avg_score:.2f}", ha="center", va="center", fontsize=13, fontweight="bold")
+    ax.text(0, -0.18, f"Dir {avg_dir:.2f}", ha="center", va="center", fontsize=10)
+    ax.set_title("Sentiment Article Mix")
+    ax.axis("equal")
+    return fig
 
 
 # =============================================================================
@@ -1703,29 +1916,108 @@ def main() -> None:
     # -------------------------------------------------------------------------
     with tab5:
         st.header("FinBERT Sentiment Add-On")
-        st.write("Optional: similar to your original dashboard, this analyzes Yahoo Finance RSS headlines/summaries with FinBERT.")
-        st.caption("Leave this disabled on Streamlit Cloud if the app is running slowly, because transformer models can be heavy.")
+        st.write(
+            "This section now matches the IRIS scanner's FinBERT score logic, shows article drop-downs, "
+            "and converts the daily news readout into a paper-trading spread bias."
+        )
+        st.caption("Transformer models can be heavy on Streamlit Cloud. If the app is slow, lower the max article count.")
 
-        sent_ticker = st.text_input("Sentiment ticker", value=tickers[0] if tickers else "SPY")
+        sent_ticker = clean_ticker(st.text_input("Sentiment ticker", value=tickers[0] if tickers else "SPY"))
         keyword = st.text_input("Keyword filter", value="")
         max_articles = st.slider("Max RSS articles", 5, 50, 20)
 
         if st.button("Run FinBERT Sentiment"):
             with st.spinner("Loading FinBERT and reading Yahoo Finance RSS..."):
                 sent_df, sent_err = fetch_yahoo_rss_sentiment(sent_ticker, keyword, max_articles)
+
             if sent_err:
                 st.error(sent_err)
             elif sent_df.empty:
-                st.warning("No matching articles found.")
+                st.warning("No matching articles found. Try removing the keyword filter or using a more liquid Yahoo Finance ticker such as SPY or QQQ.")
             else:
-                avg_score = sent_df["Score"].mean()
-                pos = int((sent_df["Score"] > 0).sum())
-                neg = int((sent_df["Score"] < 0).sum())
-                c1, c2, c3 = st.columns(3)
-                c1.metric("Articles", len(sent_df))
-                c2.metric("Average Sentiment", f"{avg_score:.2f}")
-                c3.metric("Positive:Negative", f"{pos}:{neg}")
-                st.dataframe(sent_df[["Date", "Title", "Sentiment", "Score", "Link", "Summary"]], use_container_width=True, hide_index=True)
+                # Store it so reruns do not instantly clear the output.
+                st.session_state["latest_sentiment_df"] = sent_df
+                st.session_state["latest_sentiment_ticker"] = sent_ticker
+
+        sent_df = st.session_state.get("latest_sentiment_df", pd.DataFrame())
+        active_sent_ticker = st.session_state.get("latest_sentiment_ticker", sent_ticker)
+
+        if not sent_df.empty:
+            avg_score = float(sent_df["Score"].mean())
+            avg_directional = float(sent_df["Directional Score"].mean())
+            pos = int((sent_df["Directional Score"] > 0).sum())
+            neg = int((sent_df["Directional Score"] < 0).sum())
+            neu = int((sent_df["Directional Score"] == 0).sum())
+
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Articles", len(sent_df))
+            c2.metric("IRIS-Style Avg Score", f"{avg_score:.2f}")
+            c3.metric("Directional Avg", f"{avg_directional:.2f}")
+            c4.metric("Positive / Neutral / Negative", f"{pos} / {neu} / {neg}")
+
+            chart_col, readout_col = st.columns([1, 1.35])
+            with chart_col:
+                st.pyplot(plot_sentiment_donut(sent_df))
+
+            # Pull current regime context if the ticker was part of the latest scan.
+            regime_df_for_news = st.session_state.get("latest_regime_rows", pd.DataFrame())
+            regime_row = None
+            if not regime_df_for_news.empty and "Ticker" in regime_df_for_news.columns:
+                match = regime_df_for_news[regime_df_for_news["Ticker"].astype(str).str.upper() == active_sent_ticker]
+                if not match.empty:
+                    regime_row = match.iloc[0]
+
+            readout = build_news_spread_readout(sent_df, regime_row)
+
+            with readout_col:
+                st.subheader("News-to-Spread Readout")
+                r1, r2 = st.columns(2)
+                r1.metric("News Bias", readout["bias"])
+                r2.metric("Volatility Risk", readout["risk_level"])
+
+                st.markdown(f"**Spread interpretation:** {readout['spread_readout']}")
+                st.markdown(f"**Volatility warning:** {readout['volatility_warning']}")
+
+                if readout["warnings"]:
+                    st.warning(" | ".join(readout["warnings"]))
+                else:
+                    st.success("No major earnings/macro/legal/volatility flags detected in the matched article set.")
+
+                if regime_row is not None:
+                    st.caption(
+                        f"Using latest scanner context for {active_sent_ticker}: "
+                        f"Regime = {regime_row.get('Regime', 'N/A')}, "
+                        f"IV Rank Proxy = {safe_float(regime_row.get('IV Rank Proxy'), np.nan):.0f}"
+                    )
+                else:
+                    st.caption("Run the HELIOS Matrix Scan for this ticker first if you want the news readout to include regime + IV context.")
+
+            st.write(f"### All Analyzed Articles ({len(sent_df)} total)")
+            for idx, article in sent_df.reset_index(drop=True).iterrows():
+                with st.expander(f"Article {idx + 1}: {article['Title']}"):
+                    col1, col2 = st.columns([1, 3])
+                    with col1:
+                        st.write(f"**Date:** {article['Date']}")
+                        st.write(f"**Sentiment:** {article['Sentiment']}")
+                        st.write(f"**Score:** {safe_float(article['Score'], 0):.2f}")
+                        st.write(f"**Directional Score:** {safe_float(article['Directional Score'], 0):.2f}")
+                        st.write(f"**Risk Flags:** {article.get('Risk Flags', 'None detected')}")
+                        if article["Link"]:
+                            st.write(f"[Read Full Article]({article['Link']})")
+                    with col2:
+                        st.write("**Summary:**")
+                        st.write(article["Full Text"])
+
+            with st.expander("Why the HELIOS score was different from IRIS", expanded=False):
+                st.markdown(
+                    """
+                    The earlier HELIOS sentiment function did two things differently:
+                    1. It converted FinBERT **neutral** labels to `0.0`, while IRIS kept the model confidence as the displayed score.
+                    2. It analyzed only `summary[:1800]` instead of using the same helper/fallback style as IRIS with tokenizer truncation.
+
+                    This version keeps the **IRIS-style Score** for consistency, and also adds **Directional Score**, where neutral = `0.0`, for spread-selection logic.
+                    """
+                )
 
     st.markdown("---")
     st.markdown(

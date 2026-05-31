@@ -1411,25 +1411,93 @@ def build_news_spread_readout(sent_df: pd.DataFrame, regime_row: Optional[pd.Ser
 
 
 def plot_sentiment_donut(sent_df: pd.DataFrame):
-    counts = sent_df["Sentiment"].str.lower().value_counts()
+    """HELIOS-styled donut chart for the FinBERT sentiment mix."""
+    counts = sent_df["Sentiment"].astype(str).str.lower().value_counts()
     labels = ["positive", "neutral", "negative"]
     values = [int(counts.get(label, 0)) for label in labels]
 
-    fig, ax = plt.subplots(figsize=(5.2, 5.2))
+    # Match the black + purple HELIOS theme instead of Matplotlib defaults.
+    bg_color = "#000000"
+    text_color = "#FFFFFF"
+    muted_text = "#D8C4FF"
+    accent = "#B266FF"
+    colors = ["#B266FF", "#3B0A45", "#FF4B9B"]
+
+    fig, ax = plt.subplots(figsize=(5.4, 5.4), facecolor=bg_color)
+    ax.set_facecolor(bg_color)
+
+    if sum(values) == 0:
+        pie_values = [1]
+        pie_labels = ["No Articles"]
+        pie_colors = ["#2A2A2A"]
+    else:
+        pie_values = values
+        pie_labels = [label.title() for label in labels]
+        pie_colors = colors
+
     wedges, texts, autotexts = ax.pie(
-        values,
-        labels=[label.title() for label in labels],
-        autopct=lambda pct: f"{pct:.0f}%" if pct > 0 else "",
+        pie_values,
+        labels=pie_labels,
+        colors=pie_colors,
+        autopct=lambda pct: f"{pct:.0f}%" if pct > 0 and sum(values) > 0 else "",
         startangle=90,
-        pctdistance=0.78,
-        wedgeprops={"width": 0.38},
+        pctdistance=0.76,
+        labeldistance=1.08,
+        textprops={"color": muted_text, "fontsize": 10, "fontfamily": "DejaVu Sans", "fontweight": "bold"},
+        wedgeprops={"width": 0.38, "edgecolor": bg_color, "linewidth": 2.2},
     )
+
+    for autotext in autotexts:
+        autotext.set_color(text_color)
+        autotext.set_fontsize(10)
+        autotext.set_fontfamily("DejaVu Sans")
+        autotext.set_fontweight("bold")
+
     avg_score = float(sent_df["Score"].mean()) if not sent_df.empty else 0.0
     avg_dir = float(sent_df["Directional Score"].mean()) if not sent_df.empty else 0.0
-    ax.text(0, 0.06, f"IRIS Avg\n{avg_score:.2f}", ha="center", va="center", fontsize=13, fontweight="bold")
-    ax.text(0, -0.18, f"Dir {avg_dir:.2f}", ha="center", va="center", fontsize=10)
-    ax.set_title("Sentiment Article Mix")
+    ax.text(
+        0,
+        0.08,
+        "AVG SCORE",
+        ha="center",
+        va="center",
+        fontsize=10,
+        color=muted_text,
+        fontfamily="DejaVu Sans",
+        fontweight="bold",
+    )
+    ax.text(
+        0,
+        -0.07,
+        f"{avg_score:.2f}",
+        ha="center",
+        va="center",
+        fontsize=22,
+        color=accent,
+        fontfamily="DejaVu Sans",
+        fontweight="bold",
+    )
+    ax.text(
+        0,
+        -0.25,
+        f"Bias {avg_dir:.2f}",
+        ha="center",
+        va="center",
+        fontsize=9,
+        color=text_color,
+        fontfamily="DejaVu Sans",
+    )
     ax.axis("equal")
+    ax.set_title(
+        "Sentiment Article Mix",
+        color=accent,
+        fontsize=14,
+        fontweight="bold",
+        pad=18,
+        fontfamily="DejaVu Sans",
+    )
+    fig.patch.set_facecolor(bg_color)
+    fig.tight_layout(pad=1.2)
     return fig
 
 
@@ -1917,7 +1985,7 @@ def main() -> None:
     with tab5:
         st.header("FinBERT Sentiment Add-On")
         st.write(
-            "This section now matches the IRIS scanner's FinBERT score logic, shows article drop-downs, "
+            "This section analyzes Yahoo Finance RSS articles with FinBERT, shows article drop-downs, "
             "and converts the daily news readout into a paper-trading spread bias."
         )
         st.caption("Transformer models can be heavy on Streamlit Cloud. If the app is slow, lower the max article count.")
@@ -1951,13 +2019,9 @@ def main() -> None:
 
             c1, c2, c3, c4 = st.columns(4)
             c1.metric("Articles", len(sent_df))
-            c2.metric("IRIS-Style Avg Score", f"{avg_score:.2f}")
-            c3.metric("Directional Avg", f"{avg_directional:.2f}")
+            c2.metric("Average Sentiment", f"{avg_score:.2f}")
+            c3.metric("News Bias Score", f"{avg_directional:.2f}")
             c4.metric("Positive / Neutral / Negative", f"{pos} / {neu} / {neg}")
-
-            chart_col, readout_col = st.columns([1, 1.35])
-            with chart_col:
-                st.pyplot(plot_sentiment_donut(sent_df))
 
             # Pull current regime context if the ticker was part of the latest scan.
             regime_df_for_news = st.session_state.get("latest_regime_rows", pd.DataFrame())
@@ -1969,8 +2033,14 @@ def main() -> None:
 
             readout = build_news_spread_readout(sent_df, regime_row)
 
+            st.markdown("### News-to-Spread Readout")
+            chart_col, readout_col = st.columns([1, 1.35])
+            with chart_col:
+                # Small spacer keeps the chart visually lower than the section title and aligned with the readout card.
+                st.markdown("<div style='height: 1.05rem;'></div>", unsafe_allow_html=True)
+                st.pyplot(plot_sentiment_donut(sent_df), use_container_width=True)
+
             with readout_col:
-                st.subheader("News-to-Spread Readout")
                 r1, r2 = st.columns(2)
                 r1.metric("News Bias", readout["bias"])
                 r2.metric("Volatility Risk", readout["risk_level"])
@@ -2000,7 +2070,7 @@ def main() -> None:
                         st.write(f"**Date:** {article['Date']}")
                         st.write(f"**Sentiment:** {article['Sentiment']}")
                         st.write(f"**Score:** {safe_float(article['Score'], 0):.2f}")
-                        st.write(f"**Directional Score:** {safe_float(article['Directional Score'], 0):.2f}")
+                        st.write(f"**News Bias Score:** {safe_float(article['Directional Score'], 0):.2f}")
                         st.write(f"**Risk Flags:** {article.get('Risk Flags', 'None detected')}")
                         if article["Link"]:
                             st.write(f"[Read Full Article]({article['Link']})")
@@ -2008,7 +2078,6 @@ def main() -> None:
                         st.write("**Summary:**")
                         st.write(article["Full Text"])
 
-                
 
     st.markdown("---")
     st.markdown(

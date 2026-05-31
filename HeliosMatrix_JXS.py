@@ -2008,15 +2008,6 @@ def main() -> None:
                         st.write("**Summary:**")
                         st.write(article["Full Text"])
 
-            with st.expander("Why the HELIOS score was different from IRIS", expanded=False):
-                st.markdown(
-                    """
-                    The earlier HELIOS sentiment function did two things differently:
-                    1. It converted FinBERT **neutral** labels to `0.0`, while IRIS kept the model confidence as the displayed score.
-                    2. It analyzed only `summary[:1800]` instead of using the same helper/fallback style as IRIS with tokenizer truncation.
-
-                    This version keeps the **IRIS-style Score** for consistency, and also adds **Directional Score**, where neutral = `0.0`, for spread-selection logic.
-                    """
                 )
 
     st.markdown("---")

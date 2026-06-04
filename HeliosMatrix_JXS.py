@@ -57,7 +57,7 @@ except Exception:
 
 st.set_page_config(
     page_title="HELIOS Options Matrix",
-    page_icon="📊",
+    page_icon="ð",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -979,12 +979,22 @@ def score_spreads_rule_based(spreads: pd.DataFrame, regime: Optional[str] = None
         # DTE preference.
         dte = safe_float(row.get("dte"), np.nan)
         if np.isfinite(dte):
-            if 20 <= dte <= 60:
+            if dte == 0 and strategy == "Iron Condor Candidate":
+                # 0DTE iron condors are a primary HELIOS workflow, so do not apply the generic short-DTE penalty.
+                score += 6
+                reason_bits.append("0DTE IC focus")
+                if abs(safe_float(row.get("net_delta"), 0)) <= 0.12:
+                    score += 4
+                    reason_bits.append("balanced 0DTE delta")
+            elif dte == 0:
+                score -= 4
+                reason_bits.append("0DTE gamma risk")
+            elif 20 <= dte <= 60:
                 score += 7
                 reason_bits.append("DTE in preferred range")
             elif dte < 7:
-                score -= 10
-                reason_bits.append("very short DTE")
+                score -= 6
+                reason_bits.append("short-DTE gamma risk")
 
         scores.append(float(np.clip(score, 0, 100)))
         reasons.append(", ".join(reason_bits[:5]))
@@ -1642,7 +1652,12 @@ def main() -> None:
         st.header("Scanner Inputs")
         ticker_text = st.text_input("Tickers", value="SPY, QQQ, IWM, AAPL", help="Comma-separated. For XSP, Yahoo option chains may be inconsistent; SPY is useful as a liquidity proxy.")
         period = st.selectbox("Price history period", ["6mo", "1y", "2y", "5y"], index=2)
-        dte_min, dte_max = st.slider("DTE range", min_value=1, max_value=120, value=(20, 60), step=1)
+        zero_dte_only = st.checkbox(
+            "0DTE iron condor focus",
+            value=True,
+            help="When enabled, HELIOS prioritizes same-day expirations for iron condor scanning. If no 0DTE chain is available, it falls back to the DTE range below.",
+        )
+        dte_min, dte_max = st.slider("DTE range", min_value=0, max_value=120, value=(0, 45), step=1)
         min_width, max_width = st.slider("Spread width range", min_value=0.5, max_value=25.0, value=(1.0, 5.0), step=0.5)
         max_bid_ask_pct = st.slider("Max bid-ask spread % per leg", 1, 100, 30)
         min_open_interest = st.number_input("Min open interest per leg", min_value=0, max_value=10000, value=10, step=10)
@@ -1651,6 +1666,8 @@ def main() -> None:
         event_risk_days = st.slider("Event-risk window days", 0, 30, 7)
         max_expirations_to_scan = st.slider("Max expirations per ticker", 1, 12, 6)
         run_scan = st.button("Run HELIOS Matrix Scan", type="primary")
+        if zero_dte_only:
+            st.caption("0DTE mode is ON: same-day expirations will be scanned first when available. Use paper trading only and watch gamma/pin risk.")
 
     tickers = [clean_ticker(t) for t in ticker_text.split(",") if clean_ticker(t)]
 
@@ -1701,8 +1718,15 @@ def main() -> None:
             expirations, exp_err = get_option_expirations(ticker)
             selected_exps = []
             if expirations:
-                selected_exps = [e for e in expirations if dte_min <= dte_from_expiration(e) <= dte_max]
-                selected_exps = selected_exps[:max_expirations_to_scan]
+                # 0DTE support: Yahoo expirations are date strings, so DTE == 0 means same-day expiration.
+                same_day_exps = [e for e in expirations if dte_from_expiration(e) == 0]
+                range_exps = [e for e in expirations if dte_min <= dte_from_expiration(e) <= dte_max]
+
+                if zero_dte_only and same_day_exps:
+                    selected_exps = same_day_exps[:max_expirations_to_scan]
+                else:
+                    # If 0DTE focus is on but no same-day chain exists, fall back to the normal DTE range.
+                    selected_exps = range_exps[:max_expirations_to_scan]
 
             # Pull first selected expiration to estimate ATM IV for regime.
             atm_iv = np.nan
@@ -1858,7 +1882,7 @@ def main() -> None:
     # -------------------------------------------------------------------------
     with tab3:
         st.header("Spread Scanner")
-        st.write("Ranks vertical spreads, and optionally builds iron-condor candidates from matched put/call credit spreads.")
+        st.write("Ranks vertical spreads, and optionally builds iron-condor candidates from matched put/call credit spreads. 0DTE iron condors are supported when same-day expirations are available.")
 
         spreads_df = st.session_state.get("latest_spreads", pd.DataFrame())
         if spreads_df.empty:

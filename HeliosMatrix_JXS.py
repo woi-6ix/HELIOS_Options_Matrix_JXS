@@ -1630,7 +1630,57 @@ def format_spread_table(spreads: pd.DataFrame, n: int = 50) -> pd.DataFrame:
         "reason",
     ]
     available = [c for c in cols if c in spreads.columns]
-    return spreads[available].head(n)
+    table = spreads[available].copy()
+    if "final_score" in table.columns:
+        table["final_score"] = pd.to_numeric(table["final_score"], errors="coerce")
+        table = table.sort_values("final_score", ascending=False, na_position="last")
+    return table.head(n)
+
+
+def style_spread_table(spread_table: pd.DataFrame):
+    """Format scanner output and highlight the highest final score in HELIOS green."""
+    if spread_table.empty:
+        return spread_table
+
+    numeric_formats = {
+        "final_score": "{:.1f}",
+        "model_score": "{:.1f}",
+        "rule_score": "{:.1f}",
+        "premium": "{:.2f}",
+        "width": "{:.2f}",
+        "max_profit_$": "${:,.0f}",
+        "max_loss_$": "${:,.0f}",
+        "reward_to_risk": "{:.2f}",
+        "short_delta_abs": "{:.2f}",
+        "net_delta": "{:.2f}",
+        "net_theta": "{:.2f}",
+        "net_vega": "{:.2f}",
+        "liquidity_score": "{:.1f}",
+        "avg_bid_ask_pct": "{:.1f}%",
+        "iv_rank_proxy": "{:.0f}",
+    }
+    numeric_formats = {col: fmt for col, fmt in numeric_formats.items() if col in spread_table.columns}
+
+    if "final_score" not in spread_table.columns:
+        return spread_table.style.format(numeric_formats, na_rep="-")
+
+    top_score = pd.to_numeric(spread_table["final_score"], errors="coerce").max()
+
+    def highlight_top_final_score(column: pd.Series):
+        styles = ["" for _ in column]
+        if column.name != "final_score" or not np.isfinite(top_score):
+            return styles
+        for pos, value in enumerate(pd.to_numeric(column, errors="coerce")):
+            if np.isfinite(value) and value == top_score:
+                styles[pos] = (
+                    "background-color: #0B5D1E; "
+                    "color: #FFFFFF; "
+                    "font-weight: 800; "
+                    "border: 1px solid #2EE66B;"
+                )
+        return styles
+
+    return spread_table.style.format(numeric_formats, na_rep="-").apply(highlight_top_final_score, axis=0)
 
 
 # =============================================================================
@@ -1896,9 +1946,13 @@ def main() -> None:
             min_score = st.slider("Minimum final score", 0, 100, 0)
             filtered = spreads_df[
                 spreads_df["strategy"].isin(strategy_filter)
-                & (spreads_df["final_score"].fillna(0) >= min_score)
+                & (pd.to_numeric(spreads_df["final_score"], errors="coerce").fillna(0) >= min_score)
             ].copy()
-            st.dataframe(format_spread_table(filtered, n=150), use_container_width=True, hide_index=True)
+            filtered["final_score"] = pd.to_numeric(filtered["final_score"], errors="coerce")
+            filtered = filtered.sort_values("final_score", ascending=False, na_position="last").reset_index(drop=True)
+
+            spread_table = format_spread_table(filtered, n=150)
+            st.dataframe(style_spread_table(spread_table), use_container_width=True, hide_index=True)
 
             st.download_button(
                 "Download scanner results CSV",
